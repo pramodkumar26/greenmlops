@@ -1,0 +1,7 @@
+mlops/ 
+__pycache__/ 
+*.pyc 
+.env 
+data/raw/* 
+*.csv 
+"data/" 
