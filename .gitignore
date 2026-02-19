@@ -4,4 +4,4 @@ __pycache__/
 .env 
 data/raw/* 
 *.csv 
-data/processed/*
+data/processed/*"data/" 
