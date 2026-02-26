@@ -5,3 +5,8 @@ __pycache__/
 data/raw/* 
 *.csv 
 data/processed/*"data/" 
+airflow/include/data/raw/
+airflow/include/data/processed/cifar100/train_labels.npy
+airflow/include/data/processed/cifar100/test_labels.npy
+*.arrow
+emissions/emissions.csv.bak
