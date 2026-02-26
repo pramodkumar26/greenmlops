@@ -21,6 +21,7 @@ BATCH_SIZE    = 32
 LR            = 2e-5
 MAX_LEN       = 128
 
+
 torch.manual_seed(RANDOM_STATE)
 np.random.seed(RANDOM_STATE)
 

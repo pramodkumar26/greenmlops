@@ -22,6 +22,7 @@ LR            = 1e-3
 
 torch.manual_seed(RANDOM_STATE)
 device = torch.device("cuda")
+
 print(f"Device: {device} | {torch.cuda.get_device_name(0)}")
 
 dagshub.init(repo_owner=DAGSHUB_USER, repo_name=DAGSHUB_REPO, mlflow=True)
