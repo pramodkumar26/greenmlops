@@ -2,3 +2,5 @@
 pandas
 pyarrow
 evidently==0.4.16
+torchvision
+datasets

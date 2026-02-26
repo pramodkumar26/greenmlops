@@ -1,70 +1,69 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
 import pandas as pd
-from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset
+import numpy as np
+from pathlib import Path
 
+
+RAW_PATH = Path("/usr/local/airflow/include/data/raw/fraud/creditcard.csv")
+PROCESSED_DIR = Path("/usr/local/airflow/include/data/processed/fraud")
 
 
 def load_fraud():
-    df = pd.read_csv('/usr/local/airflow/include/creditcard.csv')
-    print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-    return len(df)
+    df = pd.read_csv(RAW_PATH)
+    print(f"Shape      : {df.shape}")
+    print(f"Columns    : {df.columns.tolist()}")
+    print(f"Nulls      : {df.isnull().sum().sum()}")
+    print(f"Fraud rate : {df['Class'].mean() * 100:.4f}%")
 
 
-def check_fraud_quality():
-    df = pd.read_csv('/usr/local/airflow/include/creditcard.csv')
-    missing = df.isnull().sum().sum()
-    total_transactions = len(df)
-    class_counts = df['Class'].value_counts()
-    legit_count = class_counts.get(0, 0)
-    fraud_count = class_counts.get(1, 0)
-    fraud_rate = (fraud_count / total_transactions) * 100
+def clean_fraud():
+    df = pd.read_csv(RAW_PATH)
 
-    print(f"Missing values: {missing}")
-    print(f"Total transactions: {total_transactions}")
-    print(f"Fraud distribution:\n{class_counts}")
-    print(f'Fraud rate: {fraud_rate:.4f}%')
+    df = df.drop(columns=["Time"])
+    df["Amount"] = np.log1p(df["Amount"])
+    df = df.reset_index(drop=True)
+
+    assert df.isnull().sum().sum() == 0, "Nulls remain after cleaning"
+
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(PROCESSED_DIR / "creditcard_clean.csv", index=False)
+
+    print(f"Clean shape : {df.shape}")
+    print(f"Saved to    : {PROCESSED_DIR}/creditcard_clean.csv")
 
 
-def detect_fraud_drift():
-    df = pd.read_csv('/usr/local/airflow/include/creditcard.csv')
-    
-    # Temporal split - important for fraud data
-    split = int(len(df) * 0.7)
-    reference = df[:split]
-    current = df[split:]
-    
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=reference, current_data=current)
-    
-    result = report.as_dict()
-    drift_detected = result['metrics'][0]['result']['dataset_drift']
-    drift_share = result['metrics'][0]['result']['share_of_drifted_columns']
-    
-    print(f" Drift detected: {drift_detected}")
-    print(f" Share of drifted columns: {drift_share:.2%}")
-    print(f" HIGH urgency dataset - fraud patterns evolve fast")
+def split_fraud():
+    df = pd.read_csv(PROCESSED_DIR / "creditcard_clean.csv")
 
-def save_fraud():
-    df = pd.read_csv('/usr/local/airflow/include/creditcard.csv')
-    df.to_csv('/usr/local/airflow/include/creditcard_clean.csv', index=False)
-    print(f" Saved {len(df)} rows to creditcard_clean.csv")
+    n = len(df)
+    train_end = int(n * 0.70)
+    val_end   = int(n * 0.85)
+
+    train = df.iloc[:train_end].reset_index(drop=True)
+    val   = df.iloc[train_end:val_end].reset_index(drop=True)
+    test  = df.iloc[val_end:].reset_index(drop=True)
+
+    train.to_csv(PROCESSED_DIR / "train.csv", index=False)
+    val.to_csv(PROCESSED_DIR   / "val.csv",   index=False)
+    test.to_csv(PROCESSED_DIR  / "test.csv",  index=False)
+
+    print(f"Train : {len(train)} rows | Fraud: {train['Class'].sum()}")
+    print(f"Val   : {len(val)} rows   | Fraud: {val['Class'].sum()}")
+    print(f"Test  : {len(test)} rows  | Fraud: {test['Class'].sum()}")
 
 
 with DAG(
     dag_id="fraud_etl",
     start_date=datetime(2024, 2, 16),
-    schedule=None,  
-    catchup=False
+    schedule=None,
+    catchup=False,
+    tags=["greenmlops", "etl", "fraud"]
 ) as dag:
-    
 
-    task1 = PythonOperator(task_id='load_fraud', python_callable=load_fraud)
-    task2 = PythonOperator(task_id='check_fraud_quality', python_callable=check_fraud_quality)
-    task3 = PythonOperator(task_id='detect_drift', python_callable=detect_fraud_drift)
-    task4 = PythonOperator(task_id='save_clean_data', python_callable=save_fraud)
+    t1 = PythonOperator(task_id="load_fraud",  python_callable=load_fraud)
+    t2 = PythonOperator(task_id="clean_fraud", python_callable=clean_fraud)
+    t3 = PythonOperator(task_id="split_fraud", python_callable=split_fraud)
 
-
-    task1 >> task2 >> task3 >> task4
+    t1 >> t2 >> t3
