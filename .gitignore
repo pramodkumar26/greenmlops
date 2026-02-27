@@ -18,3 +18,4 @@ airflow/include/data/processed/
 *.pt
 *.pth
 *.ckpt
+emissions/*.bak 
