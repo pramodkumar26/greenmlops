@@ -1,6 +1,5 @@
 # ============================================================
 # GreenMLOps — requirements.txt
-# Updated: February 2026
 # Python: 3.9+
 #
 # INSTALL ORDER (important):
@@ -111,19 +110,4 @@ docker==7.1.0
 
 
 
-# ============================================================
-# REMOVED FROM ORIGINAL (no longer needed):
-#
-# All old dataset-specific packages that had no other purpose
-# are removed. Everything else above is either:
-#   (a) required by Airflow/MLflow/CodeCarbon internals, or
-#   (b) directly used in the new pipeline
-#
-# CRITICAL CHANGES SUMMARY:
-#   DOWNGRADED: evidently 0.7.20 → 0.4.16  (breaking change in newer versions)
-#   ADDED:      torch, torchvision          (ResNet-18 + LSTM)
-#   ADDED:      transformers 4.57.6         (DistilBERT)
-#   ADDED:      datasets 4.5.0              (HuggingFace AG News)
-#   ADDED:      accelerate 1.12.0           (HuggingFace Trainer)
-#   ADDED:      imbalanced-learn 0.14.1     (SMOTE for fraud dataset)
-# ============================================================
+
