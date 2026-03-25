@@ -4,13 +4,17 @@ from datetime import datetime, timedelta, timezone
 import sys
 import os
 
-from carbon.carbon_scheduler import (
-    CarbonScheduler, load_caiso_data, URGENCY_CONFIG, POLICIES, _floor_to_hour
-)
+# from carbon.carbon_scheduler import (
+#     CarbonScheduler, load_caiso_data, URGENCY_CONFIG, POLICIES, _floor_to_hour
+# )
+
+from urgency_classifier import _URGENCY_TABLE as URGENCY_CONFIG, UrgencyClassifier
+from carbon_scheduler import CarbonScheduler, load_caiso_data, POLICIES, _floor_to_hour
 
 def make_scheduler_with_mock(rows: list) -> CarbonScheduler:
     scheduler = CarbonScheduler.__new__(CarbonScheduler)
     scheduler.caiso = pd.DataFrame(rows, columns=["timestamp", "carbon_intensity"])
+    scheduler._clf = UrgencyClassifier()
     return scheduler
 
 

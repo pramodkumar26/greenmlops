@@ -2,35 +2,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 import logging
+from urgency_classifier import UrgencyClassifier, _DATASET_TO_URGENCY
 
 logger = logging.getLogger(__name__)
 
-URGENCY_CONFIG = {
-    "CRITICAL": {
-        "datasets": ["fraud"],
-        "d_max_hours": 0,
-        "delta_max_pct": 0.0,
-        "clean_threshold": None,
-    },
-    "MEDIUM": {
-        "datasets": ["cifar100", "ag_news"],
-        "d_max_hours": 12,
-        "delta_max_pct": 2.0,
-        "clean_threshold": 150.0,   
-    },
-    "LOW": {
-        "datasets": ["ett"],
-        "d_max_hours": 24,
-        "delta_max_pct": 3.0,
-        "clean_threshold": 150.0,   
-    },
-}
-
-DATASET_TO_URGENCY = {
-    dataset: urgency
-    for urgency, cfg in URGENCY_CONFIG.items()
-    for dataset in cfg["datasets"]
-}
 
 POLICIES = {
     "immediate_critical":          "CRITICAL urgency - always train at t0, no carbon check",
@@ -42,8 +17,6 @@ POLICIES = {
     "fallback_no_data":            "No CAISO data found in window - defaulted to t0",
 }
 
-# Known column name variants for the timestamp and carbon intensity columns.
-# Electricity Maps exports can differ by locale, encoding, or export version.
 _TS_VARIANTS = [
     "Datetime (UTC)",
     "datetime (utc)",
@@ -54,8 +27,8 @@ _TS_VARIANTS = [
 ]
 
 _CI_VARIANTS = [
-    "Carbon intensity gCO\u2082eq/kWh (direct)",   # unicode subscript
-    "Carbon intensity gCO2eq/kWh (direct)",        # ascii fallback
+    "Carbon intensity gCO\u2082eq/kWh (direct)",
+    "Carbon intensity gCO2eq/kWh (direct)",
     "carbon intensity gco2eq/kwh (direct)",
     "carbon_intensity_direct",
     "Carbon Intensity gCO2eq/kWh (direct)",
@@ -99,9 +72,9 @@ def _floor_to_hour(ts: datetime) -> datetime:
 
 class CarbonScheduler:
 
-
     def __init__(self, caiso_csv_path: str):
         self.caiso = load_caiso_data(caiso_csv_path)
+        self._clf = UrgencyClassifier()
         self._validate_data()
 
     def _validate_data(self):
@@ -133,8 +106,6 @@ class CarbonScheduler:
         return float(self.caiso.loc[idx, "carbon_intensity"])
 
     def _get_window(self, t0: datetime, d_max_hours: int) -> pd.DataFrame:
-        # Floor t0 to the hour so we don't accidentally skip the first CAISO row
-        # when t0 has minutes/seconds (e.g. 20:03 would miss the 20:00 row otherwise).
         t0_floored = _floor_to_hour(t0)
         t_end = t0_floored + timedelta(hours=d_max_hours)
         mask = (
@@ -151,19 +122,12 @@ class CarbonScheduler:
         dataset_name: str = None,
         current_accuracy_drop_pct: float = 0.0,
     ) -> dict:
-        
+
         urgency_class = urgency_class.upper()
-
-        if urgency_class not in URGENCY_CONFIG:
-            raise ValueError(
-                f"Unknown urgency class '{urgency_class}'. "
-                f"Must be one of {list(URGENCY_CONFIG.keys())}"
-            )
-
-        cfg = URGENCY_CONFIG[urgency_class]
+        cfg = self._clf.get_config(urgency_class)
 
         if d_max_hours is None:
-            d_max_hours = cfg["d_max_hours"]
+            d_max_hours = cfg.d_max_hours
 
         if t0.tzinfo is None:
             t0 = t0.replace(tzinfo=timezone.utc)
@@ -181,16 +145,16 @@ class CarbonScheduler:
                 d_max_hours=d_max_hours,
                 policy=policy,
                 dataset_name=dataset_name,
-                delta_max_pct=cfg["delta_max_pct"],
+                delta_max_pct=cfg.delta_max_pct,
             )
 
         if urgency_class == "CRITICAL" or d_max_hours == 0:
             return result(t0, carbon_at_t0, "immediate_critical")
 
-        if current_accuracy_drop_pct >= cfg["delta_max_pct"]:
+        if current_accuracy_drop_pct >= cfg.delta_max_pct:
             logger.warning(
                 "Accuracy drop %.2f%% >= delta_max %.2f%% for %s - forcing immediate retrain",
-                current_accuracy_drop_pct, cfg["delta_max_pct"], urgency_class,
+                current_accuracy_drop_pct, cfg.delta_max_pct, urgency_class,
             )
             return result(t0, carbon_at_t0, "immediate_accuracy_exceeded")
 
@@ -203,22 +167,17 @@ class CarbonScheduler:
             )
             return result(t0, carbon_at_t0, "fallback_no_data")
 
-        if carbon_at_t0 <= cfg["clean_threshold"]:
+        if carbon_at_t0 <= cfg.clean_threshold_gco2:
             return result(t0, carbon_at_t0, "immediate_already_clean")
 
         min_idx = window["carbon_intensity"].idxmin()
         t_star = window.loc[min_idx, "timestamp"]
         carbon_at_t_star = float(window.loc[min_idx, "carbon_intensity"])
 
-        # Check t_star == t0 before the clean_threshold check.
-        # Handles the case where t0 is already the lowest point in a fully dirty window
-        
         if t_star == t0:
             return result(t0, carbon_at_t_star, "immediate_optimal")
 
-        # No hour in the window is below clean_threshold - enforce MaxDelay.
-        
-        if carbon_at_t_star > cfg["clean_threshold"]:
+        if carbon_at_t_star > cfg.clean_threshold_gco2:
             t_maxdelay = t0 + timedelta(hours=d_max_hours)
             carbon_at_maxdelay = self._get_carbon_at(t_maxdelay)
             return result(t_maxdelay, carbon_at_maxdelay, "maxdelay_fallback")
@@ -229,8 +188,6 @@ class CarbonScheduler:
         self, t0, t_star, carbon_at_t0, carbon_at_t_star,
         urgency_class, d_max_hours, policy, dataset_name, delta_max_pct,
     ) -> dict:
-        # Normalize to plain python datetimes so MLflow and JSON serialization
-        
         if hasattr(t0, "to_pydatetime"):
             t0 = t0.to_pydatetime()
         if hasattr(t_star, "to_pydatetime"):
@@ -256,13 +213,7 @@ class CarbonScheduler:
         }
 
     def get_urgency_for_dataset(self, dataset_name: str) -> str:
-        name = dataset_name.lower()
-        if name not in DATASET_TO_URGENCY:
-            raise ValueError(
-                f"Unknown dataset '{dataset_name}'. "
-                f"Known datasets: {list(DATASET_TO_URGENCY.keys())}"
-            )
-        return DATASET_TO_URGENCY[name]
+        return self._clf.urgency_class_for(dataset_name)
 
     def schedule_for_dataset(
         self,
