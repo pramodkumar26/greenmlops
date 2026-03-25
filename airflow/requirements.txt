@@ -4,3 +4,6 @@ pyarrow
 evidently==0.4.16
 torchvision
 datasets
+mlflow
+codecarbon
+dagshub
