@@ -1,10 +1,7 @@
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
-import numpy as np
-import pandas as pd
 from pathlib import Path
-import torchvision
 
 
 RAW_DIR       = Path("/usr/local/airflow/include/data/raw/cifar100")
@@ -12,6 +9,8 @@ PROCESSED_DIR = Path("/usr/local/airflow/include/data/processed/cifar100")
 
 
 def load_cifar100():
+    import torchvision
+
     train_dataset = torchvision.datasets.CIFAR100(
         root=str(RAW_DIR), train=True, download=False
     )
@@ -26,6 +25,10 @@ def load_cifar100():
 
 
 def save_cifar100_metadata():
+    import torchvision
+    import numpy as np
+    import pandas as pd
+
     train_dataset = torchvision.datasets.CIFAR100(
         root=str(RAW_DIR), train=True, download=False
     )
@@ -53,6 +56,9 @@ def save_cifar100_metadata():
 
 
 def verify_cifar100():
+    import numpy as np
+    import pandas as pd
+
     classes   = pd.read_csv(PROCESSED_DIR / "classes.csv")
     train_lbl = np.load(PROCESSED_DIR / "train_labels.npy")
     test_lbl  = np.load(PROCESSED_DIR / "test_labels.npy")

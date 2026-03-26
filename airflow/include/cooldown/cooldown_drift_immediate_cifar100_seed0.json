@@ -1,0 +1,9 @@
+{
+  "run_id": "drift_immediate_cifar100_seed0",
+  "last_retrain_day": {
+    "fraud": -999,
+    "cifar100": 57,
+    "ag_news": -999,
+    "ett": -999
+  }
+}

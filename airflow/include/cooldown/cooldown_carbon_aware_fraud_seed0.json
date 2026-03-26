@@ -1,9 +1,9 @@
 {
-  "run_id": "periodic_seed0",
+  "run_id": "carbon_aware_fraud_seed0",
   "last_retrain_day": {
     "fraud": -999,
     "cifar100": -999,
     "ag_news": -999,
-    "ett": 55
+    "ett": -999
   }
 }
