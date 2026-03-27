@@ -19,4 +19,5 @@ airflow/include/data/processed/
 *.pth
 *.ckpt
 emissions/*.bak 
-airflow/include/data/embeddings/
+airflow/include/data/embeddings/airflow/include/cooldown/ 
+airflow/include/cooldown/ 

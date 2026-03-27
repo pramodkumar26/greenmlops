@@ -8,7 +8,6 @@ sys.path.insert(0, "/usr/local/airflow/include/src")
 sys.path.insert(0, "/usr/local/airflow/include/src/carbon")
 
 DATASET         = "fraud"
-SEED            = 0
 SIM_DAYS        = 60
 RETRAIN_EVERY_N = 7
 
@@ -25,6 +24,13 @@ SAMPLES_PER_DAY = 3322
 REFERENCE_DAYS  = 7
 ROLLING_DAYS    = 3
 FEATURE_EXCLUDE = {"Class"}
+
+WINDOW_CONFIGS = {
+    0: "2024-01-01",
+    1: "2024-05-01",
+    2: "2024-10-15",
+}
+SEEDS = [0, 1, 2]
 
 FRAUD_INJECTION_DAYS = {
     4, 7, 10, 14, 17, 20, 23, 26, 29, 32,
@@ -69,15 +75,16 @@ def load_caiso(csv_path):
     return df
 
 
-def sim_day_to_datetime(sim_day, caiso_df):
+def sim_day_to_datetime(sim_day, caiso_df, anchor_date):
+    import pandas as pd
     from datetime import timedelta
-    first_date = caiso_df["timestamp"].iloc[0].normalize()
-    target     = first_date + timedelta(days=sim_day, hours=12)
+    anchor = pd.Timestamp(anchor_date, tz="UTC")
+    target = anchor + timedelta(days=sim_day, hours=12)
     return target.to_pydatetime()
 
 
-def get_carbon_at_day(sim_day, caiso_df):
-    target_date = sim_day_to_datetime(sim_day, caiso_df).date()
+def get_carbon_at_day(sim_day, caiso_df, anchor_date):
+    target_date = sim_day_to_datetime(sim_day, caiso_df, anchor_date).date()
     rows        = caiso_df[caiso_df["timestamp"].dt.date == target_date]
     if rows.empty:
         return float(caiso_df["carbon_intensity"].mean())
@@ -94,8 +101,7 @@ def get_rolling_window(train_df, feature_cols, sim_day, reference):
         window_start: window_start + ROLLING_DAYS * SAMPLES_PER_DAY
     ][feature_cols].copy()
     if sim_day in FRAUD_INJECTION_DAYS:
-        ref_std = reference.std()
-        current = current + 1.5 * ref_std
+        current = current + 1.5 * reference.std()
     return current
 
 
@@ -110,11 +116,11 @@ def run_psi_drift_check(reference, current):
     return drift_detected, drift_score
 
 
-def schedule_periodic(day, caiso_df, scheduler, retrain_days):
+def schedule_periodic(day, caiso_df, scheduler, retrain_days, anchor_date):
     if day not in retrain_days:
         return None
-    carbon = get_carbon_at_day(day, caiso_df)
-    t0     = sim_day_to_datetime(day, caiso_df)
+    carbon = get_carbon_at_day(day, caiso_df, anchor_date)
+    t0     = sim_day_to_datetime(day, caiso_df, anchor_date)
     return dict(
         t0=t0,
         t_star=t0,
@@ -127,9 +133,9 @@ def schedule_periodic(day, caiso_df, scheduler, retrain_days):
     )
 
 
-def schedule_drift_immediate(day, caiso_df, scheduler, retrain_days=None):
-    carbon = get_carbon_at_day(day, caiso_df)
-    t0     = sim_day_to_datetime(day, caiso_df)
+def schedule_drift_immediate(day, caiso_df, scheduler, retrain_days, anchor_date):
+    carbon = get_carbon_at_day(day, caiso_df, anchor_date)
+    t0     = sim_day_to_datetime(day, caiso_df, anchor_date)
     return dict(
         t0=t0,
         t_star=t0,
@@ -142,10 +148,9 @@ def schedule_drift_immediate(day, caiso_df, scheduler, retrain_days=None):
     )
 
 
-def schedule_carbon_aware(day, caiso_df, scheduler, retrain_days=None):
+def schedule_carbon_aware(day, caiso_df, scheduler, retrain_days, anchor_date):
     # Fraud is CRITICAL urgency -- D_max=0, always retrain immediately
-    # CarbonScheduler returns t_star=t0 for CRITICAL, carbon_saved_pct=0
-    t0     = sim_day_to_datetime(day, caiso_df)
+    t0     = sim_day_to_datetime(day, caiso_df, anchor_date)
     result = scheduler.schedule_for_dataset(t0=t0, dataset_name=DATASET)
     return dict(
         t0=result["t0"],
@@ -159,7 +164,7 @@ def schedule_carbon_aware(day, caiso_df, scheduler, retrain_days=None):
     )
 
 
-def run_simulation(approach, scheduling_fn, use_drift_check):
+def run_simulation(approach, scheduling_fn, use_drift_check, window, seed, anchor_date):
     import mlflow
     import pandas as pd
     from dataclasses import asdict
@@ -177,9 +182,8 @@ def run_simulation(approach, scheduling_fn, use_drift_check):
     scheduler    = CarbonScheduler(caiso_csv_path=CAISO_CSV)
     retrain_days = set(range(RETRAIN_EVERY_N - 1, SIM_DAYS, RETRAIN_EVERY_N))
 
-    # Fraud is CRITICAL -- cooldown does not apply, but tracker is still
-    # initialised for schema consistency across all 4 simulation DAGs
-    tracker = CooldownTracker(state_dir=COOLDOWN_DIR, run_id=f"{approach}_fraud_seed{SEED}")
+    run_id  = f"{approach}_window{window}_seed{seed}"
+    tracker = CooldownTracker(state_dir=COOLDOWN_DIR, run_id=f"fraud_{run_id}")
     tracker.reset()
 
     mlflow.set_tracking_uri(MLFLOW_URI)
@@ -189,21 +193,23 @@ def run_simulation(approach, scheduling_fn, use_drift_check):
     total_carbon_scheduled = 0.0
     retrain_count          = 0
 
-    with mlflow.start_run(run_name=f"{approach}_seed{SEED}"):
-        mlflow.log_param("approach",   approach)
-        mlflow.log_param("seed",       SEED)
-        mlflow.log_param("sim_days",   SIM_DAYS)
-        mlflow.log_param("energy_kwh", FRAUD_ENERGY_KWH)
+    with mlflow.start_run(run_name=run_id):
+        mlflow.log_param("approach",    approach)
+        mlflow.log_param("window",      window)
+        mlflow.log_param("anchor_date", anchor_date)
+        mlflow.log_param("seed",        seed)
+        mlflow.log_param("sim_days",    SIM_DAYS)
+        mlflow.log_param("energy_kwh",  FRAUD_ENERGY_KWH)
 
         for day in range(SIM_DAYS):
 
             if use_drift_check:
-                carbon  = get_carbon_at_day(day, caiso_df)
+                carbon  = get_carbon_at_day(day, caiso_df, anchor_date)
                 current = get_rolling_window(train_df, feature_cols, day, reference)
 
                 drift_detected, drift_score = run_psi_drift_check(reference, current)
 
-                # CRITICAL urgency -- no cooldown check, every detection triggers retraining
+                # CRITICAL urgency -- no cooldown, every detection triggers retraining
                 triggered = drift_detected
 
                 check_record = DriftCheckRecord(
@@ -216,13 +222,13 @@ def run_simulation(approach, scheduling_fn, use_drift_check):
                     accuracy_on_new_distribution=-1.0,
                     carbon_intensity_at_check=carbon,
                 )
-                with mlflow.start_run(run_name=f"{approach}_drift_day{day}", nested=True):
+                with mlflow.start_run(run_name=f"{run_id}_drift_day{day}", nested=True):
                     mlflow.log_params({k: str(v) for k, v in asdict(check_record).items()})
 
                 if not triggered:
                     continue
 
-            sched = scheduling_fn(day, caiso_df, scheduler, retrain_days)
+            sched = scheduling_fn(day, caiso_df, scheduler, retrain_days, anchor_date)
             if sched is None:
                 continue
 
@@ -245,11 +251,11 @@ def run_simulation(approach, scheduling_fn, use_drift_check):
                 accuracy_post_retrain=-1.0,
                 policy_applied=sched["policy_applied"],
                 delta_max_pct=sched["delta_max_pct"],
-                seed=SEED,
+                seed=seed,
                 approach=approach,
             )
 
-            with mlflow.start_run(run_name=f"{approach}_retrain_day{day}", nested=True):
+            with mlflow.start_run(run_name=f"{run_id}_retrain_day{day}", nested=True):
                 mlflow.log_params({k: str(v) for k, v in event.to_flat_dict().items()})
                 mlflow.log_metric("carbon_saved_pct", event.carbon_saved_pct)
                 mlflow.log_metric("energy_kwh",       event.energy_kwh)
@@ -271,15 +277,30 @@ def run_simulation(approach, scheduling_fn, use_drift_check):
 
 
 def run_periodic(**context):
-    run_simulation("periodic",        schedule_periodic,        use_drift_check=False)
+    for window, anchor_date in WINDOW_CONFIGS.items():
+        for seed in SEEDS:
+            run_simulation(
+                "periodic", schedule_periodic, False,
+                window, seed, anchor_date,
+            )
 
 
 def run_drift_immediate(**context):
-    run_simulation("drift_immediate", schedule_drift_immediate, use_drift_check=True)
+    for window, anchor_date in WINDOW_CONFIGS.items():
+        for seed in SEEDS:
+            run_simulation(
+                "drift_immediate", schedule_drift_immediate, True,
+                window, seed, anchor_date,
+            )
 
 
 def run_carbon_aware(**context):
-    run_simulation("carbon_aware",    schedule_carbon_aware,    use_drift_check=True)
+    for window, anchor_date in WINDOW_CONFIGS.items():
+        for seed in SEEDS:
+            run_simulation(
+                "carbon_aware", schedule_carbon_aware, True,
+                window, seed, anchor_date,
+            )
 
 
 with DAG(

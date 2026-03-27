@@ -15,7 +15,7 @@ EXPERIMENTS  = [
     "ett_simulation",
     "cifar100_simulation",
     "ag_news_simulation",
-    #"fraud_simulation",
+    "fraud_simulation",
 ]
 OUTPUT_DIR  = Path(__file__).parent.parent / "experiments" / "results"
 OUTPUT_FILE = OUTPUT_DIR / "simulation_results.csv"

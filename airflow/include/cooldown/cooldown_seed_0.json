@@ -1,9 +1,0 @@
-{
-  "run_id": "seed_0",
-  "last_retrain_day": {
-    "fraud": -999,
-    "cifar100": 13,
-    "ag_news": 13,
-    "ett": 7
-  }
-}
