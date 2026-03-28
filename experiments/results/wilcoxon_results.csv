@@ -1,0 +1,4 @@
+experiment,wilcoxon_stat,p_value,significant,n_pairs
+ag_news_simulation,45.0,0.001953,True,9
+cifar100_simulation,45.0,0.001953,True,9
+ett_simulation,45.0,0.001953,True,9
