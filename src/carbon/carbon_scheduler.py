@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 import logging
-from urgency_classifier import UrgencyClassifier, _DATASET_TO_URGENCY
+from .urgency_classifier import UrgencyClassifier, _DATASET_TO_URGENCY
+from .electricity_maps_client import ElectricityMapsClient
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +73,35 @@ def _floor_to_hour(ts: datetime) -> datetime:
 
 class CarbonScheduler:
 
-    def __init__(self, caiso_csv_path: str):
-        self.caiso = load_caiso_data(caiso_csv_path)
+    def __init__(self, caiso_csv_path: str = None, mode: str = "historical"):
+        """
+        Initialize CarbonScheduler with support for both historical and live modes.
+        
+        Parameters
+        ----------
+        caiso_csv_path : str, optional
+            Path to historical CAISO CSV file. Required for historical mode.
+        mode : str, default "historical"
+            Operating mode: "historical" (uses CSV) or "live" (uses Electricity Maps API)
+        """
+        self.mode = mode.lower()
         self._clf = UrgencyClassifier()
-        self._validate_data()
+        
+        if self.mode == "historical":
+            if not caiso_csv_path:
+                raise ValueError("caiso_csv_path is required for historical mode")
+            self.caiso = load_caiso_data(caiso_csv_path)
+            self.api_client = None
+            self._validate_data()
+        elif self.mode == "live":
+            self.caiso = None
+            self.api_client = ElectricityMapsClient()
+            logger.info("CarbonScheduler initialized in live mode with Electricity Maps API")
+        else:
+            raise ValueError(f"Unknown mode '{mode}'. Use 'historical' or 'live'")
 
     def _validate_data(self):
+        """Validate historical CSV data (only used in historical mode)."""
         if self.caiso.empty:
             raise ValueError("CAISO data is empty after loading")
         if len(self.caiso) < 8784:
@@ -92,27 +116,96 @@ class CarbonScheduler:
         )
 
     def _get_carbon_at(self, ts: datetime) -> float:
+        """Get carbon intensity at a specific timestamp."""
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        idx = (self.caiso["timestamp"] - ts).abs().idxmin()
-        nearest = self.caiso.loc[idx, "timestamp"]
-        gap_hours = abs((nearest - ts).total_seconds()) / 3600.0
-        if gap_hours > 1.0:
-            logger.warning(
-                "Nearest CAISO row is %.1fh away from requested ts %s - "
-                "t0 may be outside the CSV date range",
-                gap_hours, ts.isoformat(),
-            )
-        return float(self.caiso.loc[idx, "carbon_intensity"])
+            
+        if self.mode == "historical":
+            # Use historical CSV data
+            idx = (self.caiso["timestamp"] - ts).abs().idxmin()
+            nearest = self.caiso.loc[idx, "timestamp"]
+            gap_hours = abs((nearest - ts).total_seconds()) / 3600.0
+            if gap_hours > 1.0:
+                logger.warning(
+                    "Nearest CAISO row is %.1fh away from requested ts %s - "
+                    "t0 may be outside the CSV date range",
+                    gap_hours, ts.isoformat(),
+                )
+            return float(self.caiso.loc[idx, "carbon_intensity"])
+        
+        elif self.mode == "live":
+            # Use live API data
+            try:
+                result = self.api_client.get_current_intensity()
+                logger.info(
+                    "Live carbon intensity: %.1f gCO2/kWh at %s",
+                    result["carbon_intensity"], result["timestamp"].isoformat()
+                )
+                return result["carbon_intensity"]
+            except Exception as e:
+                logger.error("Failed to get live carbon intensity: %s", e)
+                # Fallback to a reasonable default
+                logger.warning("Using fallback carbon intensity: 300 gCO2/kWh")
+                return 300.0
 
     def _get_window(self, t0: datetime, d_max_hours: int) -> pd.DataFrame:
+        """Get carbon intensity window for optimization."""
         t0_floored = _floor_to_hour(t0)
         t_end = t0_floored + timedelta(hours=d_max_hours)
-        mask = (
-            (self.caiso["timestamp"] >= t0_floored)
-            & (self.caiso["timestamp"] <= t_end)
-        )
-        return self.caiso[mask].copy()
+        
+        if self.mode == "historical":
+            # Use historical CSV data
+            mask = (
+                (self.caiso["timestamp"] >= t0_floored)
+                & (self.caiso["timestamp"] <= t_end)
+            )
+            return self.caiso[mask].copy()
+        
+        elif self.mode == "live":
+            # Use live API forecast if available
+            try:
+                forecast = self.api_client.get_forecast(hours=d_max_hours)
+                
+                if forecast and len(forecast) > 0:
+                    # Convert forecast to DataFrame format
+                    df = pd.DataFrame(forecast)
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    
+                    # Filter to the requested window
+                    mask = (
+                        (df["timestamp"] >= t0_floored)
+                        & (df["timestamp"] <= t_end)
+                    )
+                    window = df[mask].copy()
+                    
+                    logger.info(
+                        "Live forecast window: %d points from %s to %s",
+                        len(window), t0_floored.isoformat(), t_end.isoformat()
+                    )
+                    return window
+                else:
+                    # No forecast available - create single point with current intensity
+                    logger.warning(
+                        "No forecast available, using current intensity for entire window"
+                    )
+                    current_ci = self._get_carbon_at(t0)
+                    
+                    # Create a simple window with current intensity
+                    timestamps = pd.date_range(
+                        start=t0_floored, 
+                        end=t_end, 
+                        freq='H'
+                    )
+                    window = pd.DataFrame({
+                        "timestamp": timestamps,
+                        "carbon_intensity": [current_ci] * len(timestamps)
+                    })
+                    return window
+                    
+            except Exception as e:
+                logger.error("Failed to get live forecast: %s", e)
+                # Return empty DataFrame to trigger fallback
+                return pd.DataFrame(columns=["timestamp", "carbon_intensity"])
 
     def schedule(
         self,
@@ -230,15 +323,50 @@ class CarbonScheduler:
         )
 
     def carbon_stats(self) -> dict:
-        ci = self.caiso["carbon_intensity"]
-        p10, p25, p75, p90 = np.percentile(ci, [10, 25, 75, 90])
-        return {
-            "min": round(float(ci.min()), 2),
-            "p10": round(float(p10), 2),
-            "p25": round(float(p25), 2),
-            "mean": round(float(ci.mean()), 2),
-            "median": round(float(ci.median()), 2),
-            "p75": round(float(p75), 2),
-            "p90": round(float(p90), 2),
-            "max": round(float(ci.max()), 2),
-        }
+        """Get carbon intensity statistics."""
+        if self.mode == "historical":
+            ci = self.caiso["carbon_intensity"]
+            p10, p25, p75, p90 = np.percentile(ci, [10, 25, 75, 90])
+            return {
+                "min": round(float(ci.min()), 2),
+                "p10": round(float(p10), 2),
+                "p25": round(float(p25), 2),
+                "mean": round(float(ci.mean()), 2),
+                "median": round(float(ci.median()), 2),
+                "p75": round(float(p75), 2),
+                "p90": round(float(p90), 2),
+                "max": round(float(ci.max()), 2),
+            }
+        elif self.mode == "live":
+            # For live mode, get current intensity and forecast if available
+            try:
+                current = self.api_client.get_current_intensity()
+                current_ci = current["carbon_intensity"]
+                
+                forecast = self.api_client.get_forecast(hours=24)
+                if forecast and len(forecast) > 0:
+                    forecast_values = [p["carbon_intensity"] for p in forecast]
+                    all_values = [current_ci] + forecast_values
+                    
+                    p10, p25, p75, p90 = np.percentile(all_values, [10, 25, 75, 90])
+                    return {
+                        "current": round(current_ci, 2),
+                        "forecast_hours": len(forecast),
+                        "min": round(float(np.min(all_values)), 2),
+                        "p10": round(float(p10), 2),
+                        "p25": round(float(p25), 2),
+                        "mean": round(float(np.mean(all_values)), 2),
+                        "median": round(float(np.median(all_values)), 2),
+                        "p75": round(float(p75), 2),
+                        "p90": round(float(p90), 2),
+                        "max": round(float(np.max(all_values)), 2),
+                    }
+                else:
+                    return {
+                        "current": round(current_ci, 2),
+                        "forecast_hours": 0,
+                        "note": "No forecast available - showing current intensity only"
+                    }
+            except Exception as e:
+                logger.error("Failed to get live carbon stats: %s", e)
+                return {"error": str(e)}
