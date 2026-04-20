@@ -1,11 +1,8 @@
 """
 test_electricity_maps.py
 
-Validation script for Electricity Maps API integration.
-Run this before deploying to GCP to confirm API access works.
-
-Usage:
-    python scripts/test_electricity_maps.py
+Validation script for Electricity Maps API integration
+Run this to confirm API access works before deploying to GCP
 """
 
 import sys
@@ -24,7 +21,7 @@ load_dotenv()
 
 
 def test_current_intensity():
-    """Test getting current carbon intensity."""
+    """Test getting current carbon intensity"""
     print("\n" + "="*60)
     print("TEST 1: Current Carbon Intensity")
     print("="*60)
@@ -38,10 +35,10 @@ def test_current_intensity():
         print(f"  Carbon Intensity: {result['carbon_intensity']:.1f} gCO2/kWh")
         print(f"  Timestamp: {result['timestamp'].isoformat()}")
         
-        # Sanity check: carbon intensity should be between 0 and 1000 gCO2/kWh
+        # sanity check
         ci = result['carbon_intensity']
         if 0 <= ci <= 1000:
-            print(f"✓ Carbon intensity value is reasonable ({ci:.1f} gCO2/kWh)")
+            print(f"✓ Carbon intensity looks reasonable ({ci:.1f} gCO2/kWh)")
         else:
             print(f"⚠ Warning: Carbon intensity seems unusual ({ci:.1f} gCO2/kWh)")
         
