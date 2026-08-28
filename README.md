@@ -146,8 +146,4 @@ Trained on Tesla T4 before the scheduling experiments, so the drift and retraini
 | XGBoost | Fraud | 0.84 F1 | 0.001007 kWh |
 | LSTM | ETT | 0.117 RMSE | 0.022 kWh |
 
-## Status
 
-Experiments are complete: 189 result rows covering 108 main runs and 81 Pareto sweep runs. Statistical analysis is done and the figures are generated. The paper is in progress, targeting MLSys, KDD, or FAccT, with an arXiv preprint going up first.
-
-Still open: wiring real accuracy measurement through the simulation loop so the carbon and accuracy trade-off can be quantified instead of only bounded by configuration.
